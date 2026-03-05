@@ -24,13 +24,13 @@ import (
 func main() {
 	_ = godotenv.Load()
 
-	addressesFile := getEnv("ADDRESSES_FILE", "addresses.txt")
-	snapshotFile := getEnv("SNAPSHOT_FILE", "balances_snapshot.json")
+	addressesFile := getEnv("ADDRESSES_FILE", "/app/addresses.txt")
+	snapshotFile := getEnv("SNAPSHOT_FILE", "/data/balances_snapshot.json")
 	btcAPIHost := mustGetEnv("BTC_API_HOST")
 	trxGRPCHost := mustGetEnv("TRX_GRPC_HOST")
 	notifierType := getEnv("NOTIFIER_TYPE", "telegram")
 	loggerType := getEnv("LOGGER_TYPE", "console")
-	loggerFile := getEnv("LOGGER_FILE", "application.log")
+	loggerFile := getEnv("LOGGER_FILE", "/data/application.log")
 	pollInterval := getDurationEnv("POLL_INTERVAL", time.Hour)
 	maxConcurrentChecks := getPositiveIntEnv("MAX_CONCURRENT_CHECKS", 20)
 	notifier := buildNotifier(notifierType)

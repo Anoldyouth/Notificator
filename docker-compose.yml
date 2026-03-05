@@ -1,0 +1,19 @@
+services:
+  notificator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: notificator:local
+    env_file:
+      - .env
+    environment:
+      ADDRESSES_FILE: /app/addresses.txt
+      SNAPSHOT_FILE: /data/balances_snapshot.json
+      LOGGER_FILE: /data/application.log
+    volumes:
+      - ${ADDRESSES_FILE_HOST:-./addresses.txt}:/app/addresses.txt:ro
+      - notificator_data:/data
+    restart: unless-stopped
+
+volumes:
+  notificator_data:
