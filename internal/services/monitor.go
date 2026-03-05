@@ -3,9 +3,11 @@ package services
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
+	"notificator/internal/domain"
 	"notificator/internal/ports"
 )
 
@@ -21,8 +23,8 @@ type Monitor struct {
 
 type checkResult struct {
 	address  string
-	currency string
-	balance  float64
+	currency domain.Currency
+	balances map[domain.Asset]float64
 	err      error
 }
 
@@ -36,7 +38,7 @@ func (m *Monitor) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("load snapshot: %w", err)
 	}
 
-	current := make(map[string]float64, len(m.Addresses))
+	current := make(map[string]map[domain.Asset]float64, len(m.Addresses))
 	firstRun := len(prev) == 0
 	results := m.collectAddressChecks(ctx)
 
@@ -86,27 +88,27 @@ func (m *Monitor) checkAddress(ctx context.Context, address string) checkResult 
 		}
 	}
 
-	balance, err := m.Provider.GetBalance(ctx, address, currency)
+	balances, err := m.Provider.GetBalances(ctx, address, currency)
 	if err != nil {
 		return checkResult{
 			address:  address,
-			currency: string(currency),
+			currency: currency,
 			err:      fmt.Errorf("get balance failed: %w", err),
 		}
 	}
 
 	return checkResult{
 		address:  address,
-		currency: string(currency),
-		balance:  balance,
+		currency: currency,
+		balances: balances,
 	}
 }
 
 func (m *Monitor) processCheckResult(
 	ctx context.Context,
 	result checkResult,
-	prev map[string]float64,
-	current map[string]float64,
+	prev map[string]map[domain.Asset]float64,
+	current map[string]map[domain.Asset]float64,
 	firstRun bool,
 ) {
 	if result.err != nil {
@@ -118,36 +120,41 @@ func (m *Monitor) processCheckResult(
 		return
 	}
 
-	current[result.address] = result.balance
+	current[result.address] = result.balances
 
 	if firstRun {
-		m.Logger.Info(fmt.Sprintf("init snapshot %s (%s): %.8f", result.address, result.currency, result.balance))
+		m.Logger.Info(fmt.Sprintf("init snapshot %s (%s): %s", result.address, result.currency, formatBalances(result.balances)))
 		return
 	}
 
-	oldBalance, exists := prev[result.address]
+	oldBalances, exists := prev[result.address]
 	if !exists {
-		m.Logger.Info(fmt.Sprintf("skip notifications for new address %s (%s): %.8f", result.address, result.currency, result.balance))
+		m.Logger.Info(fmt.Sprintf("skip notifications for new address %s (%s): %s", result.address, result.currency, formatBalances(result.balances)))
 		return
 	}
 
-	if oldBalance != result.balance {
-		m.notifyBalanceChanged(ctx, result, oldBalance)
+	changes := collectBalanceChanges(oldBalances, result.balances)
+	if len(changes) > 0 {
+		m.notifyBalanceChanged(ctx, result, changes)
 	}
 }
 
-func (m *Monitor) notifyBalanceChanged(ctx context.Context, result checkResult, oldBalance float64) {
+func (m *Monitor) notifyBalanceChanged(ctx context.Context, result checkResult, changes []balanceChange) {
 	if m.Notifier == nil {
 		return
 	}
 
-	msg := fmt.Sprintf(
-		"Balance changed\nCurrency: %s\nAddress: %s\nOld: %.8f\nNew: %.8f",
-		result.currency,
-		result.address,
-		oldBalance,
-		result.balance,
+	lines := make([]string, 0, len(changes)+3)
+	lines = append(lines,
+		"Balance changed",
+		fmt.Sprintf("Currency: %s", result.currency),
+		fmt.Sprintf("Address: %s", result.address),
 	)
+	for _, change := range changes {
+		lines = append(lines, fmt.Sprintf("%s: %.8f -> %.8f", change.asset, change.oldValue, change.newValue))
+	}
+
+	msg := joinLines(lines)
 	if err := m.Notifier.Send(ctx, msg); err != nil {
 		m.Logger.Error(fmt.Sprintf("failed to send notification for %s (%s): %v", result.address, result.currency, err))
 	}
@@ -178,4 +185,78 @@ func (m *Monitor) Start(ctx context.Context, interval time.Duration) error {
 			}
 		}
 	}
+}
+
+type balanceChange struct {
+	asset    domain.Asset
+	oldValue float64
+	newValue float64
+}
+
+func collectBalanceChanges(oldBalances, newBalances map[domain.Asset]float64) []balanceChange {
+	assets := sortedAssets(newBalances)
+	changes := make([]balanceChange, 0, len(assets))
+	for _, asset := range assets {
+		newValue := newBalances[asset]
+		oldValue, exists := oldBalances[asset]
+		if !exists {
+			// New tracked asset for this address: skip notification this cycle.
+			continue
+		}
+		if oldValue != newValue {
+			changes = append(changes, balanceChange{
+				asset:    asset,
+				oldValue: oldValue,
+				newValue: newValue,
+			})
+		}
+	}
+	return changes
+}
+
+func formatBalances(balances map[domain.Asset]float64) string {
+	if len(balances) == 0 {
+		return "{}"
+	}
+
+	assets := sortedAssets(balances)
+	parts := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		value := balances[asset]
+		parts = append(parts, fmt.Sprintf("%s=%.8f", asset, value))
+	}
+	return joinWithComma(parts)
+}
+
+func sortedAssets(balances map[domain.Asset]float64) []domain.Asset {
+	assets := make([]domain.Asset, 0, len(balances))
+	for asset := range balances {
+		assets = append(assets, asset)
+	}
+	sort.Slice(assets, func(i, j int) bool {
+		return assets[i] < assets[j]
+	})
+	return assets
+}
+
+func joinWithComma(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	out := parts[0]
+	for i := 1; i < len(parts); i++ {
+		out += ", " + parts[i]
+	}
+	return out
+}
+
+func joinLines(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	out := lines[0]
+	for i := 1; i < len(lines); i++ {
+		out += "\n" + lines[i]
+	}
+	return out
 }

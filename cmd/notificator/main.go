@@ -28,6 +28,7 @@ func main() {
 	snapshotFile := getEnv("SNAPSHOT_FILE", "/data/balances_snapshot.json")
 	btcAPIHost := mustGetEnv("BTC_API_HOST")
 	trxGRPCHost := mustGetEnv("TRX_GRPC_HOST")
+	trxUSDTContract := getEnv("TRX_USDT_CONTRACT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
 	notifierType := getEnv("NOTIFIER_TYPE", "telegram")
 	loggerType := getEnv("LOGGER_TYPE", "console")
 	loggerFile := getEnv("LOGGER_FILE", "/data/application.log")
@@ -48,8 +49,9 @@ func main() {
 		Addresses: addresses,
 		Detector:  &services.PrefixAddressDetector{},
 		Provider: &providers.MultiChainBalanceProvider{
-			BTCAPIHost:  btcAPIHost,
-			TRXGRPCHost: trxGRPCHost,
+			BTCAPIHost:      btcAPIHost,
+			TRXGRPCHost:     trxGRPCHost,
+			TRXUSDTContract: trxUSDTContract,
 		},
 		Notifier: notifier,
 		Logger:   logger,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,23 +25,33 @@ const (
 )
 
 type MultiChainBalanceProvider struct {
-	Client      *http.Client
-	BTCAPIHost  string
-	TRXGRPCHost string
+	Client          *http.Client
+	BTCAPIHost      string
+	TRXGRPCHost     string
+	TRXUSDTContract string
 
-	mu        sync.Mutex
-	trxClient *client.GrpcClient
-	trxHost   string
+	mu                sync.Mutex
+	trxClient         *client.GrpcClient
+	trxHost           string
+	usdtContract      string
+	usdtDecimals      int32
+	usdtDecimalsReady bool
 }
 
-func (p *MultiChainBalanceProvider) GetBalance(ctx context.Context, address string, currency domain.Currency) (float64, error) {
+func (p *MultiChainBalanceProvider) GetBalances(ctx context.Context, address string, currency domain.Currency) (map[domain.Asset]float64, error) {
 	switch currency {
 	case domain.BTC:
-		return p.getBTCBalance(ctx, address)
+		balance, err := p.getBTCBalance(ctx, address)
+		if err != nil {
+			return nil, err
+		}
+		return map[domain.Asset]float64{
+			domain.AssetBTC: balance,
+		}, nil
 	case domain.TRX:
-		return p.getTRXBalance(ctx, address)
+		return p.getTRXBalances(ctx, address)
 	default:
-		return 0, fmt.Errorf("unsupported currency: %s", currency)
+		return nil, fmt.Errorf("unsupported currency: %s", currency)
 	}
 }
 
@@ -97,25 +108,44 @@ func (p *MultiChainBalanceProvider) fetchBTCBalanceFromAPI(ctx context.Context, 
 	return float64(confirmedBalanceSatoshi) / satoshiPerBTC, nil
 }
 
-func (p *MultiChainBalanceProvider) getTRXBalance(_ context.Context, address string) (float64, error) {
+func (p *MultiChainBalanceProvider) getTRXBalances(_ context.Context, address string) (map[domain.Asset]float64, error) {
 	host := strings.TrimSpace(p.TRXGRPCHost)
 	if host == "" {
-		return 0, fmt.Errorf("TRX gRPC host is empty")
+		return nil, fmt.Errorf("TRX gRPC host is empty")
 	}
 
 	grpcClient, err := p.getTRXClient(host)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	account, err := grpcClient.GetAccount(address)
 	if err != nil {
 		// Force client reconnect on the next request.
 		p.resetTRXClient()
-		return 0, fmt.Errorf("get trx account: %w", err)
+		return nil, fmt.Errorf("get trx account: %w", err)
 	}
 
-	return float64(account.Balance) / sunPerTRX, nil
+	usdtContract := strings.TrimSpace(p.TRXUSDTContract)
+	if usdtContract == "" {
+		return nil, fmt.Errorf("TRX USDT contract is empty")
+	}
+
+	usdtRawBalance, err := grpcClient.TRC20ContractBalance(address, usdtContract)
+	if err != nil {
+		p.resetTRXClient()
+		return nil, fmt.Errorf("get usdt trc20 balance: %w", err)
+	}
+
+	usdtDecimals, err := p.getUSDTDecimals(grpcClient, usdtContract)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[domain.Asset]float64{
+		domain.AssetTRX:  float64(account.Balance) / sunPerTRX,
+		domain.AssetUSDT: bigIntToFloat(usdtRawBalance, usdtDecimals),
+	}, nil
 }
 
 func (p *MultiChainBalanceProvider) buildInsecureBTCClient() *http.Client {
@@ -182,4 +212,47 @@ func (p *MultiChainBalanceProvider) resetTRXClient() {
 		p.trxClient = nil
 		p.trxHost = ""
 	}
+}
+
+func (p *MultiChainBalanceProvider) getUSDTDecimals(grpcClient *client.GrpcClient, contract string) (int32, error) {
+	p.mu.Lock()
+	if p.usdtDecimalsReady && p.usdtContract == contract {
+		decimals := p.usdtDecimals
+		p.mu.Unlock()
+		return decimals, nil
+	}
+	p.mu.Unlock()
+
+	decimalsValue, err := grpcClient.TRC20GetDecimals(contract)
+	if err != nil {
+		return 0, fmt.Errorf("get usdt decimals: %w", err)
+	}
+	if !decimalsValue.IsInt64() {
+		return 0, fmt.Errorf("invalid usdt decimals value")
+	}
+
+	decimals := int32(decimalsValue.Int64())
+	p.mu.Lock()
+	p.usdtContract = contract
+	p.usdtDecimals = decimals
+	p.usdtDecimalsReady = true
+	p.mu.Unlock()
+
+	return decimals, nil
+}
+
+func bigIntToFloat(value *big.Int, decimals int32) float64 {
+	if value == nil {
+		return 0
+	}
+	if decimals <= 0 {
+		floatValue, _ := new(big.Float).SetInt(value).Float64()
+		return floatValue
+	}
+
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	amount := new(big.Float).SetInt(value)
+	base := new(big.Float).SetInt(scale)
+	normalized, _ := new(big.Float).Quo(amount, base).Float64()
+	return normalized
 }
