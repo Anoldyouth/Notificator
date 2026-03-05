@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+notificator
+balances_snapshot.json
+*.log
+*.out
+*.test
+*.exe
+.DS_Store
