@@ -1,7 +1,7 @@
 .env
 
 # Build artifacts
-notificator
+/notificator
 *.exe
 *.test
 *.out
