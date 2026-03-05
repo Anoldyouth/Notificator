@@ -4,7 +4,7 @@
 /notificator
 *.exe
 *.test
-*.out
+*.txt
 
 # Runtime data
 balances_snapshot.json
