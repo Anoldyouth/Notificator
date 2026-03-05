@@ -13,6 +13,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"notificator/internal/loggers"
 	"notificator/internal/notifiers"
 	"notificator/internal/ports"
 	"notificator/internal/providers"
@@ -28,9 +29,12 @@ func main() {
 	btcAPIHost := mustGetEnv("BTC_API_HOST")
 	trxGRPCHost := mustGetEnv("TRX_GRPC_HOST")
 	notifierType := getEnv("NOTIFIER_TYPE", "telegram")
+	loggerType := getEnv("LOGGER_TYPE", "console")
+	loggerFile := getEnv("LOGGER_FILE", "application.log")
 	pollInterval := getDurationEnv("POLL_INTERVAL", time.Hour)
 	maxConcurrentChecks := getPositiveIntEnv("MAX_CONCURRENT_CHECKS", 20)
 	notifier := buildNotifier(notifierType)
+	logger := buildLogger(loggerType, loggerFile)
 
 	addresses, err := services.LoadAddressesFromFile(addressesFile)
 	if err != nil {
@@ -48,6 +52,7 @@ func main() {
 			TRXGRPCHost: trxGRPCHost,
 		},
 		Notifier: notifier,
+		Logger:   logger,
 		Store: &store.JSONSnapshotStore{
 			Path: snapshotFile,
 		},
@@ -121,5 +126,18 @@ func buildNotifier(notifierType string) ports.Notifier {
 		}
 	default:
 		panic(fmt.Errorf("unsupported NOTIFIER_TYPE: %s", notifierType))
+	}
+}
+
+func buildLogger(loggerType, loggerFile string) ports.Logger {
+	switch strings.ToLower(strings.TrimSpace(loggerType)) {
+	case "console":
+		return &loggers.ConsoleLogger{}
+	case "file":
+		return &loggers.FileLogger{
+			Path: loggerFile,
+		}
+	default:
+		panic(fmt.Errorf("unsupported LOGGER_TYPE: %s", loggerType))
 	}
 }

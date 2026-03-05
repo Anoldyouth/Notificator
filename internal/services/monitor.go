@@ -14,6 +14,7 @@ type Monitor struct {
 	Detector            ports.AddressDetector
 	Provider            ports.BalanceProvider
 	Notifier            ports.Notifier
+	Logger              ports.Logger
 	Store               ports.SnapshotStore
 	MaxConcurrentChecks int
 }
@@ -26,6 +27,10 @@ type checkResult struct {
 }
 
 func (m *Monitor) RunOnce(ctx context.Context) error {
+	if m.Logger == nil {
+		return fmt.Errorf("logger is required")
+	}
+
 	prev, err := m.Store.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("load snapshot: %w", err)
@@ -106,9 +111,9 @@ func (m *Monitor) processCheckResult(
 ) {
 	if result.err != nil {
 		if result.currency != "" {
-			fmt.Printf("skip address %s (%s): %v\n", result.address, result.currency, result.err)
+			m.Logger.Warning(fmt.Sprintf("skip address %s (%s): %v", result.address, result.currency, result.err))
 		} else {
-			fmt.Printf("skip address %s: %v\n", result.address, result.err)
+			m.Logger.Warning(fmt.Sprintf("skip address %s: %v", result.address, result.err))
 		}
 		return
 	}
@@ -116,13 +121,13 @@ func (m *Monitor) processCheckResult(
 	current[result.address] = result.balance
 
 	if firstRun {
-		fmt.Printf("init snapshot %s (%s): %.8f\n", result.address, result.currency, result.balance)
+		m.Logger.Info(fmt.Sprintf("init snapshot %s (%s): %.8f", result.address, result.currency, result.balance))
 		return
 	}
 
 	oldBalance, exists := prev[result.address]
 	if !exists {
-		fmt.Printf("skip notifications for new address %s (%s): %.8f\n", result.address, result.currency, result.balance)
+		m.Logger.Info(fmt.Sprintf("skip notifications for new address %s (%s): %.8f", result.address, result.currency, result.balance))
 		return
 	}
 
@@ -144,7 +149,7 @@ func (m *Monitor) notifyBalanceChanged(ctx context.Context, result checkResult, 
 		result.balance,
 	)
 	if err := m.Notifier.Send(ctx, msg); err != nil {
-		fmt.Printf("failed to send notification for %s (%s): %v\n", result.address, result.currency, err)
+		m.Logger.Error(fmt.Sprintf("failed to send notification for %s (%s): %v", result.address, result.currency, err))
 	}
 }
 
@@ -169,7 +174,7 @@ func (m *Monitor) Start(ctx context.Context, interval time.Duration) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := m.RunOnce(ctx); err != nil {
-				fmt.Println("monitor tick error:", err)
+				m.Logger.Error(fmt.Sprintf("monitor tick error: %v", err))
 			}
 		}
 	}
