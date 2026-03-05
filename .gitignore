@@ -1,0 +1,14 @@
+.env
+
+# Build artifacts
+notificator
+*.exe
+*.test
+*.out
+
+# Runtime data
+balances_snapshot.json
+*.log
+
+# OS files
+.DS_Store
